@@ -1,0 +1,19 @@
+apiVersion: v2
+name: kubeassume
+description: A Kubernetes controller that enables secretless cloud access by publishing OIDC discovery metadata publicly
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kubernetes
+  - oidc
+  - aws
+  - irsa
+  - secretless
+  - identity-federation
+home: https://github.com/salab/kube-iam-assume
+sources:
+  - https://github.com/salab/kube-iam-assume
+maintainers:
+  - name: KubeAssume Maintainers
+    url: https://github.com/kubeassume

@@ -1,0 +1,43 @@
+version: "2"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/hixichen/kube-iam-assume
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - unconvert
+    - godot
+    - noctx
+
+linters-settings:
+  godot:
+    scope: declarations
+    capital: false
+  misspell:
+    locale: US
+
+issues:
+  max-same-issues: 0
+  exclude-rules:
+    # Test files are more lenient
+    - path: "_test\\.go"
+      linters:
+        - errcheck
+        - godot
+    # integration tests use http.Get without context (intentional in tests)
+    - path: "test/integration"
+      linters:
+        - noctx

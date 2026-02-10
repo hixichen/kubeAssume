@@ -1,0 +1,118 @@
+# Default values for kubeassume
+# This is a YAML-formatted file.
+
+# -- Number of controller replicas (only 1 supported with leader election)
+replicaCount: 1
+
+image:
+  # -- Controller image repository
+  repository: ghcr.io/kubeassume/kubeassume
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Image tag (defaults to chart appVersion)
+  tag: ""
+
+# -- Image pull secrets
+imagePullSecrets: []
+
+# -- Override the name of the chart
+nameOverride: ""
+
+# -- Override the full name of the chart
+fullnameOverride: ""
+
+# Configuration for the controller, mounted as a configmap.
+# See pkg/config/config.go for all available options.
+config:
+  controller:
+    syncPeriod: "60s"
+    rotationOverlap: "24h"
+    leaderElection:
+      enabled: true
+      id: "kube-iam-assume-controller-leader-election"
+    # Multi-cluster shared issuer mode (optional, opt-in)
+    # Set clusterGroup to share an issuer URL across clusters.
+    # All clusters with the same clusterGroup share one OIDC issuer URL and one aggregated JWKS.
+    # Leave empty for single-cluster mode (default).
+    clusterGroup: ""       # e.g. "prod" or "staging"
+    clusterID: ""          # unique name for this cluster within the group, e.g. "prod-us-west-2"
+    aggregationInterval: "5m"
+    clusterTTL: "48h"
+  publisher:
+    type: "s3"
+    s3:
+      bucket: "your-s3-bucket"
+      region: "us-east-1"
+      useIRSA: true
+    # gcs:
+    #   bucket: ""
+    #   project: ""
+    #   useWorkloadIdentity: true
+    # azure:
+    #   storageAccount: ""
+    #   container: ""
+    #   useManagedIdentity: true
+    # oci:
+    #   bucket: ""
+    #   namespace: ""
+    #   compartmentId: ""
+    #   region: ""
+    #   useInstancePrincipal: true
+
+serviceAccount:
+  # -- Create a service account
+  create: true
+  # -- Annotations to add to the service account (e.g., for IRSA)
+  annotations: {}
+  # -- Service account name (generated if not set)
+  name: ""
+
+# -- Pod annotations
+podAnnotations: {}
+
+# -- Pod labels
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65532
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+# -- Node selector
+nodeSelector: {}
+
+# -- Tolerations
+tolerations: []
+
+# -- Affinity
+affinity: {}
+
+metrics:
+  # -- Enable Prometheus metrics
+  enabled: true
+  # -- Metrics port
+  port: 8080
+  serviceMonitor:
+    # -- Create ServiceMonitor for Prometheus Operator
+    enabled: false
+    # -- Additional labels for ServiceMonitor
+    additionalLabels: {}
+    # -- Scrape interval
+    interval: 30s
