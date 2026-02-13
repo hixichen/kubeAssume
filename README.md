@@ -196,15 +196,18 @@ The AWS SDK detects `AWS_ROLE_ARN` + `AWS_WEB_IDENTITY_TOKEN_FILE` and handles e
 
 ---
 
-## Multi-Cloud
+## Multi-Cloud and Beyond
 
-A single kube-iam-assume installation supports AWS, GCP, and Azure simultaneously. The OIDC metadata it publishes is cloud-agnostic — only the cloud-side registration differs.
+A single kube-iam-assume installation supports AWS, GCP, Azure, and any other OIDC consumer simultaneously. The metadata it publishes is cloud-agnostic — only the consumer-side registration differs.
 
-| Cloud | Mechanism | CLI |
+| Consumer | Mechanism | CLI |
 |---|---|---|
 | AWS | IAM OIDC Provider + `AssumeRoleWithWebIdentity` | `kube-iam-assume setup aws` |
 | GCP | Workload Identity Federation | `kube-iam-assume setup gcp` |
 | Azure | Federated Identity Credentials | `kube-iam-assume setup azure` |
+| HashiCorp Vault | JWT auth method (`auth/jwt`) | `kube-iam-assume setup vault` (v0.2) |
+
+**Vault is a first-class use case.** Self-hosted Kubernetes teams almost always run self-hosted Vault. With kube-iam-assume, Vault can validate service account tokens from external or HCP Vault instances with no network path to your API server — the same pattern cloud providers use. See [ARCHITECTURE.md — Vault Integration](ARCHITECTURE.md#vault-integration) for configuration details.
 
 ---
 
@@ -213,7 +216,7 @@ A single kube-iam-assume installation supports AWS, GCP, and Azure simultaneousl
 | Version | What Ships |
 |---|---|
 | **v0.1** | S3 publishing, key rotation, multi-cluster shared issuer, AWS CLI setup, Helm chart |
-| **v0.2** | GCS + Azure Blob, GCP + Azure CLI setup, Terraform modules, Prometheus metrics |
+| **v0.2** | GCS + Azure Blob, GCP + Azure + Vault CLI setup, Terraform modules, Prometheus metrics |
 | **v0.3** | `CloudIdentityBinding` CRD, mutating webhook for automatic credential injection |
 | **v1.0** | Built-in HTTPS endpoint, CNCF Landscape submission |
 

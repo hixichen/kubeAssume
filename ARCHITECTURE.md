@@ -11,6 +11,7 @@ This document covers the internal design, operational details, and configuration
 - [Internal Design](#internal-design)
 - [Key Rotation](#key-rotation)
 - [Multi-Cluster Shared Issuer](#multi-cluster-shared-issuer)
+- [Vault Integration](#vault-integration)
 - [Publishing Modes](#publishing-modes)
 - [Issuer Configuration](#issuer-configuration)
 - [Distribution-Specific Guidance](#distribution-specific-guidance)
@@ -252,6 +253,193 @@ Each cluster writes only to its own sub-path. The aggregated root JWKS is writte
 ### Cluster Decommissioning
 
 When a cluster is permanently removed, its per-cluster JWKS sub-path becomes stale. The `clusterTTL` (default: 48 hours) controls how long the leader waits before dropping a cluster from aggregation if it has not published an update. To decommission immediately, delete the `clusters/<clusterID>/` sub-path in the bucket.
+
+---
+
+## Vault Integration
+
+HashiCorp Vault is a common workload identity consumer alongside cloud IAM, and kube-iam-assume's published OIDC endpoint works with Vault's JWT auth method out of the box.
+
+### Two Vault Auth Methods — Know the Difference
+
+Vault offers two ways to authenticate Kubernetes workloads. They are fundamentally different, and only one of them requires kube-iam-assume.
+
+| Method | How Vault validates the token | Needs kube-iam-assume | When to use |
+|---|---|---|---|
+| **Kubernetes auth** (`auth/kubernetes`) | Calls the K8s TokenReview API directly | No | Vault has network access to your API server |
+| **JWT auth** (`auth/jwt`) | Fetches OIDC discovery doc + JWKS over HTTPS | **Yes** | External Vault, HCP Vault, or any Vault without API server access |
+
+If your Vault instance is inside the cluster or has direct network access to the API server, the Kubernetes auth method works without kube-iam-assume. If Vault is external — HCP Vault, Vault in a separate network, a shared Vault cluster serving multiple Kubernetes clusters — it cannot reach the API server's OIDC endpoints, and the JWT auth method with kube-iam-assume is the correct path.
+
+The JWT auth method is also the better long-term choice for multi-cluster environments: one Vault configuration covers all clusters sharing the same kube-iam-assume issuer URL, with no per-cluster Vault setup required.
+
+### How Vault JWT Auth Validates a Token
+
+The flow is identical to cloud IAM federation:
+
+1. Pod presents a projected SA token to Vault.
+2. Vault extracts the `iss` claim.
+3. Vault fetches `<issuer>/.well-known/openid-configuration` (served by kube-iam-assume's published bucket).
+4. Vault fetches the JWKS and validates the token signature.
+5. Vault checks `bound_audiences`, `bound_subject`, and `bound_claims` against the token.
+6. Vault returns a Vault token with the configured policies.
+
+### Configuration
+
+#### Step 1: Enable and configure the JWT auth method
+
+```bash
+vault auth enable jwt
+
+vault write auth/jwt/config \
+  oidc_discovery_url="https://my-cluster-oidc.s3.us-west-2.amazonaws.com"
+```
+
+Vault will fetch `/.well-known/openid-configuration` from the issuer URL and extract the `jwks_uri` automatically. No manual JWKS URL configuration is needed.
+
+#### Step 2: Create a Vault role
+
+```bash
+vault write auth/jwt/role/my-app \
+  role_type="jwt" \
+  bound_audiences="https://vault.example.com" \
+  bound_subject="system:serviceaccount:production:my-app" \
+  user_claim="sub" \
+  policies="my-app-policy" \
+  ttl="1h"
+```
+
+`bound_audiences` must match the `audience` field in the projected service account token. `bound_subject` is the Kubernetes service account in `system:serviceaccount:<namespace>/<name>` format.
+
+#### Step 3: Configure the projected token volume
+
+The `audience` in the projected volume **must match** `bound_audiences` in the Vault role. Use a Vault-specific audience, not `sts.amazonaws.com`.
+
+```yaml
+volumes:
+- name: vault-token
+  projected:
+    sources:
+    - serviceAccountToken:
+        audience: "https://vault.example.com"   # must match bound_audiences in the Vault role
+        expirationSeconds: 3600
+        path: token
+```
+
+#### Step 4: Authenticate from the pod
+
+```bash
+# Direct CLI example
+vault write auth/jwt/login \
+  role="my-app" \
+  jwt="$(cat /var/run/secrets/vault/token)"
+```
+
+In practice, use [Vault Agent](https://developer.hashicorp.com/vault/docs/agent-and-proxy/agent) for automatic token renewal:
+
+```hcl
+# vault-agent-config.hcl
+auto_auth {
+  method "jwt" {
+    config = {
+      path = "/var/run/secrets/vault/token"
+      role = "my-app"
+    }
+  }
+}
+
+sink "file" {
+  config = {
+    path = "/vault/secrets/.vault-token"
+  }
+}
+```
+
+### Multi-Audience Workloads (Cloud IAM + Vault)
+
+A workload that needs both cloud credentials and Vault access requires two separate projected token volumes, each with a different audience. A single projected token cannot serve both purposes — cloud STS rejects tokens with a non-STS audience, and Vault rejects tokens with `sts.amazonaws.com` as the audience.
+
+```yaml
+volumes:
+- name: aws-token
+  projected:
+    sources:
+    - serviceAccountToken:
+        audience: "sts.amazonaws.com"
+        expirationSeconds: 3600
+        path: token
+
+- name: vault-token
+  projected:
+    sources:
+    - serviceAccountToken:
+        audience: "https://vault.example.com"
+        expirationSeconds: 3600
+        path: token
+```
+
+```yaml
+containers:
+- name: app
+  volumeMounts:
+  - name: aws-token
+    mountPath: /var/run/secrets/aws
+  - name: vault-token
+    mountPath: /var/run/secrets/vault
+  env:
+  - name: AWS_ROLE_ARN
+    value: arn:aws:iam::ACCOUNT:role/my-app-role
+  - name: AWS_WEB_IDENTITY_TOKEN_FILE
+    value: /var/run/secrets/aws/token
+```
+
+Both tokens are issued by the same Kubernetes API server and validated against the same kube-iam-assume JWKS. The only difference is the `aud` claim.
+
+### Fine-Grained Access with `bound_claims`
+
+Vault's JWT auth supports `bound_claims` to match any claim in the token beyond `sub` and `aud`. Kubernetes 1.21+ tokens include pod-level claims under the `kubernetes.io` key:
+
+```bash
+vault write auth/jwt/role/my-app \
+  role_type="jwt" \
+  bound_audiences="https://vault.example.com" \
+  bound_subject="system:serviceaccount:production:my-app" \
+  bound_claims_type="glob" \
+  bound_claims='{"kubernetes.io/namespace": "production"}' \
+  user_claim="sub" \
+  policies="my-app-policy" \
+  ttl="1h"
+```
+
+This lets you create roles scoped to a specific namespace, or combine `bound_claims` with `bound_subject` for tighter policies. Note that `bound_claims` on pod-level fields (`kubernetes.io/pod/name`) is possible but creates ephemeral roles that must be recreated per pod — use this only for high-privilege workloads where the operational overhead is justified.
+
+### Issuer Migration and Existing Vault Setups
+
+If you have an existing Vault JWT auth configuration pointing at the old issuer (`https://kubernetes.default.svc.cluster.local`) and are migrating to kube-iam-assume, you must reconfigure the Vault JWT auth method after changing the API server issuer flag:
+
+```bash
+# After setting the new --service-account-issuer on the API server
+# and deploying kube-iam-assume, update Vault to the new issuer:
+vault write auth/jwt/config \
+  oidc_discovery_url="https://my-cluster-oidc.s3.us-west-2.amazonaws.com"
+```
+
+During the transition period, use dual `--service-account-issuer` values on the API server so both old and new tokens remain valid. Once all existing tokens with the old issuer have expired (typically 1 hour for projected tokens), the old issuer value can be removed.
+
+### Vault CLI Setup Helper (v0.2)
+
+```bash
+kube-iam-assume setup vault \
+  --issuer-url https://my-cluster-oidc.s3.us-west-2.amazonaws.com \
+  --vault-addr https://vault.example.com \
+  --audience https://vault.example.com \
+  --namespace production \
+  --service-account my-app \
+  --policy my-app-policy \
+  --role my-app
+```
+
+This configures the JWT auth method and creates the role in a single command, equivalent to the manual steps above.
 
 ---
 
